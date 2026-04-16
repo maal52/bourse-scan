@@ -319,14 +319,55 @@ function analyze(data) {
   const psar=calcPSAR(h,l,c);
   sigs.push(["PSAR",psar[L]===1?"ACHAT":"VENTE",1,psar[L]===1?"Haussier":"Baissier"]);
 
-  let sc=0,mx=0;
-  for(const[,sig,str]of sigs){mx+=str;if(sig==="ACHAT")sc+=str;else if(sig==="VENTE")sc-=str;}
+  // ── 12. Momentum Fatigue (nouveau — pénalise les hausses excessives) ──
+  const perf1m = data.length>=22 ? (c[L]/c[L-21]-1)*100 : 0;
+  const perf3m = data.length>=66 ? (c[L]/c[L-65]-1)*100 : 0;
+  if(perf1m>15 && rv>60) sigs.push(["Fatigue","VENTE",3,`+${perf1m.toFixed(0)}%/1m, RSI ${rv.toFixed(0)}`]);
+  else if(perf1m>10 && rv>55) sigs.push(["Fatigue","VENTE",2,`+${perf1m.toFixed(0)}%/1m, tendu`]);
+  else if(perf1m<-15 && rv<40) sigs.push(["Fatigue","ACHAT",3,`${perf1m.toFixed(0)}%/1m, survendu`]);
+  else if(perf1m<-10 && rv<45) sigs.push(["Fatigue","ACHAT",2,`${perf1m.toFixed(0)}%/1m, opportunité`]);
+  else sigs.push(["Fatigue","NEUTRE",0,`${perf1m>=0?'+':''}${perf1m.toFixed(0)}%/1m`]);
+
+  // ── Scoring pondéré avec filtres contextuels ──
+  const trendIndicators = ["SMA","SuperT","Ichi.","PSAR","ADX"];
+  const oscillators = ["RSI","Stoch.","Boll."];
+  const isOverboughtContext = rv > 60 && skv > 70 && perf1m > 10;
+  const isOversoldContext = rv < 40 && skv < 30 && perf1m < -10;
+  const isAdxFatigued = adxV > 40 && rv > 65;
+
+  let sc=0, mx=0;
+  for(const[name,sig,str] of sigs){
+    let effectiveStr = str;
+
+    // Filtre 1 : en contexte de surachat, les indicateurs de tendance
+    // haussiers voient leur poids divisé par 2 (ils suivent la tendance
+    // mais ne détectent pas l'essoufflement)
+    if(isOverboughtContext && sig==="ACHAT" && trendIndicators.includes(name)){
+      effectiveStr = Math.max(1, Math.round(str / 2));
+    }
+
+    // Filtre 2 : quand l'ADX est très élevé (>40) avec RSI >65,
+    // la tendance est "fatiguée" — on réduit les signaux d'achat
+    if(isAdxFatigued && sig==="ACHAT" && name!=="Fatigue"){
+      effectiveStr = Math.max(1, Math.round(str * 0.6));
+    }
+
+    // Filtre 3 : en contexte de survente, les signaux de vente
+    // des tendances sont tempérés (le marché peut rebondir)
+    if(isOversoldContext && sig==="VENTE" && trendIndicators.includes(name)){
+      effectiveStr = Math.max(1, Math.round(str / 2));
+    }
+
+    mx += effectiveStr;
+    if(sig==="ACHAT") sc += effectiveStr;
+    else if(sig==="VENTE") sc -= effectiveStr;
+  }
   const pct=mx?sc/mx*100:0;
   let verdict;
   if(pct>40)verdict="ACHAT FORT";else if(pct>15)verdict="ACHAT";
   else if(pct>-15)verdict="NEUTRE";else if(pct>-40)verdict="VENTE";
   else verdict="VENTE FORTE";
-  return{sigs,score:pct,verdict,close:c[L],prev:c[P],rsi:rv,adx:adxV,macdH:calcMACD(c).h[L]};
+  return{sigs,score:pct,verdict,close:c[L],prev:c[P],rsi:rv,adx:adxV,macdH:calcMACD(c).h[L],perf1m};
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -400,7 +441,7 @@ function renderTable(tblId, results, isCrypto) {
 
 function showDetail(r) {
   const a = r.a, dp = document.getElementById('detPanel');
-  document.getElementById('detTitle').textContent = `${r.name} — ${a.verdict} (${a.score>=0?'+':''}${a.score.toFixed(0)}%)`;
+  document.getElementById('detTitle').textContent = `${r.name} — ${a.verdict} (${a.score>=0?'+':''}${a.score.toFixed(0)}%)` + (a.perf1m!=null?` | 1m: ${a.perf1m>=0?'+':''}${a.perf1m.toFixed(1)}%`:'');
   const body = document.getElementById('detBody');
   body.innerHTML = '';
   a.sigs.forEach(([ind, sig, str, reason]) => {
