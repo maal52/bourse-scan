@@ -430,18 +430,41 @@ async function scanCryptos(){
 async function scanAV(){
   const etfs=getSel('avetf',AV_ETF);const opcs=getSel('avopc',AV_OPCVM);
   const total=etfs.length+opcs.length;if(!total)return;
-  document.getElementById('infoA').textContent=`Scan AV (${total})…`;
-  const all=[];
+  const infoEl=document.getElementById('infoA');
+  infoEl.textContent=`Scan AV (0/${total})…`;infoEl.style.color='var(--acc)';
+  const all=[],fails=[];let done=0;
   // ETF Spirit 2 — Yahoo Finance, profil stock
-  for(const it of etfs){const d=await fetchYF(it.ticker);if(!d)continue;
-  const a=analyze(d,'stock');if(a)all.push({name:it.name,ticker:it.ticker,cat:'ETF AV',a});}
-  // OPCVM Spirit 2 — smartFetch (Yahoo+Morningstar), profil opcvm
-  for(const it of opcs){const d=await smartFetch(it.ticker,it.ticker,true);if(!d)continue;
-  const a=analyze(d,'opcvm');if(a)all.push({name:it.name,ticker:it.ticker,cat:'OPCVM',a});}
+  for(const it of etfs){
+    infoEl.textContent=`Scan AV (${++done}/${total}) ${it.name}…`;
+    const d=await fetchYF(it.ticker);
+    if(!d){fails.push(`${it.name} (${it.ticker}): Yahoo ❌`);continue;}
+    const a=analyze(d,'stock');if(a)all.push({name:it.name,ticker:it.ticker,cat:'ETF AV',a});
+    else fails.push(`${it.name}: données insuffisantes`);}
+  // OPCVM Spirit 2 — essai multi-format Yahoo + Morningstar
+  for(const it of opcs){
+    infoEl.textContent=`Scan AV (${++done}/${total}) ${it.name}…`;
+    let d=null,src='';
+    // Tentative 1: Yahoo avec ISIN brut
+    d=await fetchYF(it.ticker);if(d){src='Yahoo(ISIN)';}
+    // Tentative 2: Yahoo avec ISIN.PA
+    if(!d){d=await fetchYF(it.ticker+'.PA');if(d)src='Yahoo(.PA)';}
+    // Tentative 3: Morningstar 2-step
+    if(!d){d=await fetchMorningstar(it.ticker);if(d)src='Morningstar';}
+    if(!d){fails.push(`${it.name} (${it.ticker}): Yahoo ❌ / MS ❌`);continue;}
+    const a=analyze(d,'opcvm');
+    if(a)all.push({name:it.name,ticker:it.ticker,cat:d[0]?.partial?'OPCVM ⚠':'OPCVM',a});
+    else fails.push(`${it.name}: données insuffisantes`);}
   avRes=all.sort((a,b)=>b.a.score-a.a.score);
   renderTbl('tblA',avRes,'av');
-  document.getElementById('infoA').textContent=`AV — ${now()}`;document.getElementById('infoA').style.color='var(--grn)';
-  document.getElementById('cntA').textContent=`${all.length}`;
+  const ok=all.length,ko=fails.length;
+  infoEl.textContent=`AV — ${now()} — ${ok}✅ ${ko>0?ko+'❌':''}`;
+  infoEl.style.color=ko>0?'var(--org)':'var(--grn)';
+  document.getElementById('cntA').textContent=`${ok}/${total}`;
+  // Afficher les échecs dans la console et sous le tableau
+  if(ko>0){console.warn('AV — Échecs:',fails);
+    const tb=document.querySelector('#tblA tbody');
+    const tr=document.createElement('tr');tr.innerHTML=`<td colspan="8" style="color:var(--mut);font-size:9px;padding:8px">
+    ❌ ${ko} support(s) sans données : ${fails.map(f=>f.split('(')[0].trim()).join(', ')}</td>`;tb.appendChild(tr);}
   refreshGlobal();if(all.some(r=>Math.abs(r.a.score)>=60))playAlert();}
 
 function refreshGlobal(){
