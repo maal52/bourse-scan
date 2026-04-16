@@ -255,15 +255,45 @@ function calcPSAR(highs,lows,closes){const n=closes.length,psar=new Float64Array
 // ═══════════════════════════════════════════════════════════════
 //  ANALYSE (11 indicateurs → score)
 // ═══════════════════════════════════════════════════════════════
-function analyze(data) {
+function analyze(data, isCrypto=false) {
   if (!data || data.length < 55) return null;
   const c=data.map(d=>d.c),h=data.map(d=>d.h),l=data.map(d=>d.l),v=data.map(d=>d.v);
   const L=c.length-1, P=L-1;
   const sigs=[];
+
+  // ── Seuils adaptatifs : actions vs crypto ──
+  const T = isCrypto ? {
+    rsiOB: 80, rsiOS: 20,       // crypto reste extrême plus longtemps
+    stochOB: 85, stochOS: 15,
+    bollK: 2.5,                  // mèches plus larges en crypto
+    adxStrong: 30,               // seuil de tendance forte plus élevé
+    fatigue1: 30, fatigue2: 20,  // +30%/mois est courant en crypto
+    fatigueRSI1: 70, fatigueRSI2: 65,
+    fatigueBuy1: -30, fatigueBuy2: -20,
+    fatigueBuyRSI1: 30, fatigueBuyRSI2: 35,
+    obvWeight: 1,                // volume crypto moins fiable
+    ctxOBrsi: 70, ctxOBstoch: 75, ctxOBperf: 20,
+    ctxOSrsi: 30, ctxOSstoch: 25, ctxOSperf: -20,
+    adxFatigueADX: 50, adxFatigueRSI: 75,
+  } : {
+    rsiOB: 70, rsiOS: 30,
+    stochOB: 80, stochOS: 20,
+    bollK: 2.0,
+    adxStrong: 25,
+    fatigue1: 15, fatigue2: 10,
+    fatigueRSI1: 60, fatigueRSI2: 55,
+    fatigueBuy1: -15, fatigueBuy2: -10,
+    fatigueBuyRSI1: 40, fatigueBuyRSI2: 45,
+    obvWeight: 2,
+    ctxOBrsi: 60, ctxOBstoch: 70, ctxOBperf: 10,
+    ctxOSrsi: 40, ctxOSstoch: 30, ctxOSperf: -10,
+    adxFatigueADX: 40, adxFatigueRSI: 65,
+  };
+
   // 1 RSI
   const rsiArr=calcRSI(c); const rv=rsiArr[L];
-  if(rv!=null){if(rv<30)sigs.push(["RSI","ACHAT",2,`Survente (${rv.toFixed(0)})`]);
-    else if(rv>70)sigs.push(["RSI","VENTE",2,`Surachat (${rv.toFixed(0)})`]);
+  if(rv!=null){if(rv<T.rsiOS)sigs.push(["RSI","ACHAT",2,`Survente (${rv.toFixed(0)})`]);
+    else if(rv>T.rsiOB)sigs.push(["RSI","VENTE",2,`Surachat (${rv.toFixed(0)})`]);
     else sigs.push(["RSI","NEUTRE",0,rv.toFixed(0)]);}
   // 2 MACD
   const{ml,sig:ms}=calcMACD(c);
@@ -272,15 +302,15 @@ function analyze(data) {
     else if(ml[P]>ms[P]&&ml[L]<ms[L])sigs.push(["MACD","VENTE",2,"Cross baissier"]);
     else if(ml[L]>ms[L])sigs.push(["MACD","ACHAT",1,"MACD>Sig"]);
     else sigs.push(["MACD","VENTE",1,"MACD<Sig"]);}
-  // 3 Bollinger
-  const boll=calcBoll(c);const bl=boll[L];
-  if(bl.u!=null){if(c[L]>bl.u)sigs.push(["Boll.","VENTE",1,">sup"]);
-    else if(c[L]<bl.l)sigs.push(["Boll.","ACHAT",1,"<inf"]);
+  // 3 Bollinger (écart-type adapté)
+  const boll=calcBoll(c, 20, T.bollK);const bl=boll[L];
+  if(bl.u!=null){if(c[L]>bl.u)sigs.push(["Boll.","VENTE",1,`>sup (${T.bollK}σ)`]);
+    else if(c[L]<bl.l)sigs.push(["Boll.","ACHAT",1,`<inf (${T.bollK}σ)`]);
     else sigs.push(["Boll.","NEUTRE",0,"OK"]);}
-  // 4 Stochastic
+  // 4 Stochastic (seuils adaptatifs)
   const sk=calcStoch(h,l,c);const skv=sk[L];
-  if(skv!=null){if(skv<20)sigs.push(["Stoch.","ACHAT",1,`Surv.(${skv.toFixed(0)})`]);
-    else if(skv>80)sigs.push(["Stoch.","VENTE",1,`Sura.(${skv.toFixed(0)})`]);
+  if(skv!=null){if(skv<T.stochOS)sigs.push(["Stoch.","ACHAT",1,`Surv.(${skv.toFixed(0)})`]);
+    else if(skv>T.stochOB)sigs.push(["Stoch.","VENTE",1,`Sura.(${skv.toFixed(0)})`]);
     else sigs.push(["Stoch.","NEUTRE",0,skv.toFixed(0)]);}
   // 5 SMA
   const s20=sma(c,20),s50=sma(c,50);
@@ -292,16 +322,16 @@ function analyze(data) {
   // 6 Supertrend
   const st=calcSupertrend(h,l,c);
   if(st[L])sigs.push(["SuperT",st[L]===1?"ACHAT":"VENTE",2,st[L]===1?"Haussier":"Baissier"]);
-  // 7 OBV
+  // 7 OBV (poids réduit en crypto car volumes moins fiables)
   const ob=calcOBV(c,v);
   if(data.length>5){const ot=ob[L]-ob[L-5],pt=c[L]-c[L-5];
-    if(ot>0&&pt<0)sigs.push(["OBV","ACHAT",2,"Div.hauss."]);
-    else if(ot<0&&pt>0)sigs.push(["OBV","VENTE",2,"Div.baiss."]);
+    if(ot>0&&pt<0)sigs.push(["OBV","ACHAT",T.obvWeight,`Div.hauss.${isCrypto?' ⚠':''}`]);
+    else if(ot<0&&pt>0)sigs.push(["OBV","VENTE",T.obvWeight,`Div.baiss.${isCrypto?' ⚠':''}`]);
     else if(ot>0)sigs.push(["OBV","ACHAT",1,"Vol↑"]);
     else sigs.push(["OBV","VENTE",1,"Vol↓"]);}
-  // 8 ADX
+  // 8 ADX (seuil adaptatif)
   const{adx:adxArr,pDI,nDI}=calcADX(h,l,c);const adxV=adxArr[L];
-  if(adxV>0){if(adxV>25){sigs.push(["ADX",pDI[L]>nDI[L]?"ACHAT":"VENTE",2,`Fort(${adxV.toFixed(0)})`]);}
+  if(adxV>0){if(adxV>T.adxStrong){sigs.push(["ADX",pDI[L]>nDI[L]?"ACHAT":"VENTE",2,`Fort(${adxV.toFixed(0)})`]);}
     else sigs.push(["ADX","NEUTRE",0,`Range(${adxV.toFixed(0)})`]);}
   // 9 Ichimoku
   const ich=calcIchimoku(h,l,c);
@@ -310,30 +340,30 @@ function analyze(data) {
   else if(ich.above)sigs.push(["Ichi.","ACHAT",1,">nuage"]);
   else if(ich.below)sigs.push(["Ichi.","VENTE",1,"<nuage"]);
   else sigs.push(["Ichi.","NEUTRE",0,"Nuage"]);
-  // 10 Fibonacci
+  // 10 Fibonacci (retracement 78.6% ajouté pour crypto)
   const fib=calcFibo(h,l,c);
-  if(fib.price<=fib.f618)sigs.push(["Fibo","ACHAT",2,"<61.8%"]);
+  const f786 = fib.f618 - 0.168*(Math.max(...h)-Math.min(...l));
+  if(isCrypto && fib.price<=f786) sigs.push(["Fibo","ACHAT",2,`<78.6% (zone crypto)`]);
+  else if(fib.price<=fib.f618)sigs.push(["Fibo","ACHAT",2,"<61.8%"]);
   else if(fib.price<=fib.f50)sigs.push(["Fibo","ACHAT",1,"50-61.8%"]);
   else sigs.push(["Fibo","NEUTRE",0,">38.2%"]);
   // 11 PSAR
   const psar=calcPSAR(h,l,c);
   sigs.push(["PSAR",psar[L]===1?"ACHAT":"VENTE",1,psar[L]===1?"Haussier":"Baissier"]);
 
-  // ── 12. Momentum Fatigue (nouveau — pénalise les hausses excessives) ──
+  // ── 12. Momentum Fatigue (seuils adaptatifs) ──
   const perf1m = data.length>=22 ? (c[L]/c[L-21]-1)*100 : 0;
-  const perf3m = data.length>=66 ? (c[L]/c[L-65]-1)*100 : 0;
-  if(perf1m>15 && rv>60) sigs.push(["Fatigue","VENTE",3,`+${perf1m.toFixed(0)}%/1m, RSI ${rv.toFixed(0)}`]);
-  else if(perf1m>10 && rv>55) sigs.push(["Fatigue","VENTE",2,`+${perf1m.toFixed(0)}%/1m, tendu`]);
-  else if(perf1m<-15 && rv<40) sigs.push(["Fatigue","ACHAT",3,`${perf1m.toFixed(0)}%/1m, survendu`]);
-  else if(perf1m<-10 && rv<45) sigs.push(["Fatigue","ACHAT",2,`${perf1m.toFixed(0)}%/1m, opportunité`]);
+  if(perf1m>T.fatigue1 && rv>T.fatigueRSI1) sigs.push(["Fatigue","VENTE",3,`+${perf1m.toFixed(0)}%/1m, RSI ${rv.toFixed(0)}`]);
+  else if(perf1m>T.fatigue2 && rv>T.fatigueRSI2) sigs.push(["Fatigue","VENTE",2,`+${perf1m.toFixed(0)}%/1m, tendu`]);
+  else if(perf1m<T.fatigueBuy1 && rv<T.fatigueBuyRSI1) sigs.push(["Fatigue","ACHAT",3,`${perf1m.toFixed(0)}%/1m, survendu`]);
+  else if(perf1m<T.fatigueBuy2 && rv<T.fatigueBuyRSI2) sigs.push(["Fatigue","ACHAT",2,`${perf1m.toFixed(0)}%/1m, opportunité`]);
   else sigs.push(["Fatigue","NEUTRE",0,`${perf1m>=0?'+':''}${perf1m.toFixed(0)}%/1m`]);
 
-  // ── Scoring pondéré avec filtres contextuels ──
+  // ── Scoring pondéré avec filtres contextuels (seuils adaptatifs) ──
   const trendIndicators = ["SMA","SuperT","Ichi.","PSAR","ADX"];
-  const oscillators = ["RSI","Stoch.","Boll."];
-  const isOverboughtContext = rv > 60 && skv > 70 && perf1m > 10;
-  const isOversoldContext = rv < 40 && skv < 30 && perf1m < -10;
-  const isAdxFatigued = adxV > 40 && rv > 65;
+  const isOverboughtContext = rv > T.ctxOBrsi && skv > T.ctxOBstoch && perf1m > T.ctxOBperf;
+  const isOversoldContext = rv < T.ctxOSrsi && skv < T.ctxOSstoch && perf1m < T.ctxOSperf;
+  const isAdxFatigued = adxV > T.adxFatigueADX && rv > T.adxFatigueRSI;
 
   let sc=0, mx=0;
   for(const[name,sig,str] of sigs){
@@ -500,7 +530,7 @@ async function scanCryptos() {
   for (const item of items) {
     const data = await fetchYF(item.ticker);
     if (!data) continue;
-    const a = analyze(data);
+    const a = analyze(data, true);
     if (a) all.push({ name: item.name, ticker: item.ticker, cat: 'Crypto', a });
   }
   cryptoResults = all;
